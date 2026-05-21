@@ -1,0 +1,6 @@
+{
+  "name": "Barber Scan IA",
+  "description": "Aplicativo de análise cosmética capilar masculina para barbearias premium.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
