@@ -9,23 +9,33 @@ type DiagnosticMetric = {
   tone: 'cyan' | 'emerald' | 'amber';
 };
 
+type AnalysisResult = {
+  imageCheck: string;
+  summary: string;
+  recommendation: string;
+  carePlan: string[];
+  metrics: DiagnosticMetric[];
+};
+
 const defaultMetrics: DiagnosticMetric[] = [
   { label: 'Oleosidade', value: 'Aguardando leitura', score: 0, tone: 'cyan' },
   { label: 'Densidade', value: 'Sem diagnostico', score: 0, tone: 'emerald' },
   { label: 'Saude do couro cabeludo', value: 'Sem diagnostico', score: 0, tone: 'amber' },
 ];
 
-const analyzedMetrics: DiagnosticMetric[] = [
-  { label: 'Oleosidade', value: 'Moderada', score: 68, tone: 'cyan' },
-  { label: 'Densidade', value: 'Boa cobertura', score: 81, tone: 'emerald' },
-  { label: 'Saude do couro cabeludo', value: 'Leve ressecamento frontal', score: 59, tone: 'amber' },
-];
-
-const carePlan = [
+const defaultCarePlan = [
   'Higienizacao com shampoo de equilibrio 3x por semana.',
   'Finalizacao matte para manter volume sem pesar a raiz.',
   'Retorno em 21 dias para comparar evolucao do couro cabeludo.',
 ];
+
+const defaultAnalysis: AnalysisResult = {
+  imageCheck: 'A verificacao da imagem aparece aqui depois do envio para a Gemini API.',
+  summary: 'Envie uma foto do couro cabeludo ou do corte para validar enquadramento, nitidez e contexto estetico antes do diagnostico.',
+  recommendation: 'Aguardando recomendacao personalizada',
+  carePlan: defaultCarePlan,
+  metrics: defaultMetrics,
+};
 
 const upcomingClients = [
   { name: 'Mateus Silva', service: 'Corte + barba', time: '15:30' },
@@ -60,11 +70,40 @@ function toneClasses(tone: DiagnosticMetric['tone']) {
   return 'bg-cyan-400/10 text-cyan-200 border-cyan-400/20';
 }
 
+function fileToBase64(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      const result = reader.result;
+
+      if (typeof result !== 'string') {
+        reject(new Error('Nao foi possivel converter a imagem selecionada.'));
+        return;
+      }
+
+      const [, base64] = result.split(',');
+
+      if (!base64) {
+        reject(new Error('A imagem selecionada nao possui um payload valido.'));
+        return;
+      }
+
+      resolve(base64);
+    };
+
+    reader.onerror = () => reject(new Error('Falha ao ler a imagem selecionada.'));
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisReady, setAnalysisReady] = useState(false);
+  const [analysis, setAnalysis] = useState<AnalysisResult>(defaultAnalysis);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [workspaceVisible, setWorkspaceVisible] = useState(false);
 
   useEffect(() => {
@@ -82,12 +121,14 @@ export default function App() {
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
     setSelectedFile(file);
+    setAnalysis(defaultAnalysis);
     setAnalysisReady(false);
     setIsAnalyzing(false);
+    setErrorMessage(null);
     setWorkspaceVisible(true);
   }
 
-  function handleAnalysis() {
+  async function handleAnalysis() {
     if (!selectedFile) {
       return;
     }
@@ -95,13 +136,49 @@ export default function App() {
     setIsAnalyzing(true);
     setAnalysisReady(false);
 
-    window.setTimeout(() => {
-      setIsAnalyzing(false);
+    try {
+      const imageBase64 = await fileToBase64(selectedFile);
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          imageBase64,
+          mimeType: selectedFile.type || 'image/jpeg',
+          fileName: selectedFile.name,
+        }),
+      });
+
+      const payload = (await response.json()) as Partial<AnalysisResult> & { error?: string };
+
+      if (!response.ok) {
+        throw new Error(payload.error || 'A Gemini API nao conseguiu concluir a verificacao da imagem.');
+      }
+
+      setAnalysis({
+        imageCheck: payload.imageCheck || defaultAnalysis.imageCheck,
+        summary: payload.summary || defaultAnalysis.summary,
+        recommendation: payload.recommendation || defaultAnalysis.recommendation,
+        carePlan: payload.carePlan?.length ? payload.carePlan : defaultCarePlan,
+        metrics: payload.metrics?.length ? payload.metrics : defaultMetrics,
+      });
+      setErrorMessage(null);
       setAnalysisReady(true);
-    }, 1800);
+    } catch (error) {
+      setAnalysis(defaultAnalysis);
+      setAnalysisReady(false);
+      setErrorMessage(error instanceof Error ? error.message : 'Falha inesperada ao validar a imagem.');
+    } finally {
+      setIsAnalyzing(false);
+    }
   }
 
-  const metrics = analysisReady ? analyzedMetrics : defaultMetrics;
+  const metrics = analysisReady ? analysis.metrics : defaultMetrics;
+  const carePlan = analysisReady ? analysis.carePlan : defaultCarePlan;
+  const recommendation = analysisReady ? analysis.recommendation : defaultAnalysis.recommendation;
+  const summary = analysisReady ? analysis.summary : defaultAnalysis.summary;
+  const imageCheck = analysisReady ? analysis.imageCheck : defaultAnalysis.imageCheck;
 
   return (
     <main className="min-h-screen overflow-hidden bg-[#080503] text-[#f6ead5]">
@@ -237,6 +314,12 @@ export default function App() {
                       ? `Arquivo selecionado: ${selectedFile.name}`
                       : 'Nenhuma imagem selecionada. O diagnostico sera habilitado quando a foto for enviada.'}
                   </div>
+
+                  {errorMessage ? (
+                    <div className="mt-4 rounded-2xl border border-red-900/60 bg-red-950/40 p-4 text-sm text-red-200">
+                      {errorMessage}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -254,6 +337,11 @@ export default function App() {
                 </div>
 
                 <div className="mt-6 grid gap-4">
+                  <article className="rounded-3xl border border-[#332515] bg-[#0d0806] p-4">
+                    <p className="text-sm text-[#9d8359]">Validacao da imagem</p>
+                    <p className="mt-2 text-base leading-relaxed text-[#f8efdf]">{imageCheck}</p>
+                  </article>
+
                   {metrics.map((metric) => (
                     <article key={metric.label} className="rounded-3xl border border-[#332515] bg-[#0d0806] p-4">
                       <div className="flex items-center justify-between gap-3">
@@ -275,10 +363,10 @@ export default function App() {
                 <h2 className="mt-2 font-serif text-3xl text-[#f7ecdc]">Plano de acao profissional</h2>
 
                 <div className="mt-6 rounded-[24px] border border-[#6e5124] bg-[radial-gradient(circle_at_top,_rgba(200,154,69,0.14),_transparent_40%),linear-gradient(180deg,_rgba(24,16,10,0.96),_rgba(12,8,6,1))] p-5">
-                  <p className="text-sm text-[#c8b089]">Corte recomendado</p>
-                  <p className="mt-2 font-serif text-2xl text-[#fff4e3]">Low fade com textura no topo</p>
+                  <p className="text-sm text-[#c8b089]">Recomendacao da Gemini</p>
+                  <p className="mt-2 font-serif text-2xl text-[#fff4e3]">{recommendation}</p>
                   <p className="mt-3 text-sm leading-relaxed text-[#d2bb98]">
-                    Preserva volume superior, reduz o brilho lateral e valoriza uma leitura visual mais densa na linha frontal.
+                    {summary}
                   </p>
                 </div>
 
